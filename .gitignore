@@ -44,3 +44,6 @@ streamlit.log
 # OS
 .DS_Store
 Thumbs.db
+
+
+.devcontainer
