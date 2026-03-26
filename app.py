@@ -1,4 +1,5 @@
 import os
+import subprocess
 import joblib
 import numpy as np
 import pandas as pd
@@ -31,11 +32,47 @@ FEATURE_COLS = [
 
 @st.cache_resource
 def load_all_assets() -> dict:
-    """Load pre-trained models and their supporting data into memory."""
+    """Load pre-trained models and their supporting data into memory.
+    
+    If models are missing, automatically train them first.
+    """
     assets = {}
+    
+    # Check if any models are missing
+    missing_models = []
     for key in DATASETS:
         model_path = os.path.join(MODELS_DIR, f"{key}_model.pkl")
         if not os.path.exists(model_path):
+            missing_models.append(key)
+    
+    # Train missing models if any
+    if missing_models:
+        st.info(f"🔄 Training missing models for: {', '.join(missing_models)}...")
+        try:
+            # Run the training script
+            result = subprocess.run(
+                ["python3", "train_models.py"],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout
+            )
+            if result.returncode == 0:
+                st.success("✅ Models trained successfully!")
+            else:
+                st.error(f"❌ Training failed: {result.stderr}")
+                return {}
+        except subprocess.TimeoutExpired:
+            st.error("❌ Training timed out after 5 minutes")
+            return {}
+        except Exception as e:
+            st.error(f"❌ Training error: {str(e)}")
+            return {}
+    
+    # Load all models
+    for key in DATASETS:
+        model_path = os.path.join(MODELS_DIR, f"{key}_model.pkl")
+        if not os.path.exists(model_path):
+            st.error(f"❌ Model for {key} still missing after training")
             assets[key] = None
             continue
         
@@ -172,6 +209,10 @@ with st.sidebar:
 
 # Load selected model and data
 assets  = all_assets[selected_key]
+if assets is None:
+    st.error(f"❌ Model for {selected_label} is not available. Please check the training process.")
+    st.stop()
+
 model   = assets["model"]
 stats   = assets["stats"]
 df_raw  = assets["data"]
