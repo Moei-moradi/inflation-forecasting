@@ -46,4 +46,4 @@ streamlit.log
 Thumbs.db
 
 
-.devcontainer
+.devcontainer/
