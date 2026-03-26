@@ -1,4 +1,5 @@
-# Python
+# Sample .gitignore file from the internet covering most of annoying files 
+
 __pycache__/
 *.py[cod]
 *$py.class
@@ -35,10 +36,6 @@ wheels/
 .streamlit/
 streamlit.log
 
-# Data/Models (optional - uncomment if you want to exclude)
-# models/
-# *.pickle
-# *.pkl
 
 # Environment
 .env
