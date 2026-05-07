@@ -1,26 +1,36 @@
 import os
+from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error
 import xgboost as xgb
 
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "Data"
+MODELS_DIR = BASE_DIR / "models"
+
 # Dataset configurations - map each dataset to its CSV file and column name
 DATASETS = {
     "overall_hicp": {
-        "csv_path": "hicp_monthly_euroarea_Dec2025.csv",
-        "value_col": "HICP - Overall index (ICP.M.U2.N.000000.4.ANR)",
-        "label": "Overall HICP (Euro Area)",
+        "csv_path": DATA_DIR / "Overall_Hicp_Monthly.csv",
+        "value_col": "HICP Inflation rate - Total - Annual rate of change (HICP.M.U2.N.000000.4D0.ANR)",
+        "label": "HICP Inflation Overall Rate",
     },
-    "alcohol": {
-        "csv_path": "Alcohol_monthly_euroarea_Dec2025.csv",
-        "value_col": "HICP - ALCOHOLIC BEVERAGES, TOBACCO (ICP.M.U2.N.020000.4.ANR)",
-        "label": "Alcoholic Beverages & Tobacco (Euro Area)",
+    "energy": {
+        "csv_path": DATA_DIR / "Energy_monthly.csv",
+        "value_col": "HICP Inflation rate - Energy - Annual rate of change (HICP.M.U2.N.NRGY00.4D0.ANR)",
+        "label": "HICP Energy Rate",
     },
-    "coal": {
-        "csv_path": "Coal_monthly_euroarea_Dec2025.csv",
-        "value_col": "HICP - Coal (ICP.M.U2.N.045410.4.ANR)",
-        "label": "Coal (Euro Area)",
+    "housing": {
+        "csv_path": DATA_DIR / "Housing_monthly.csv",
+        "value_col": "HICP Inflation rate - Housing, water, electricity, gas and other fuels - Annual rate of change (HICP.M.U2.N.040000.4D0.ANR)",
+        "label": "HICP Housing Rate",
+    },
+    "food": {
+        "csv_path": DATA_DIR / "Food_monthly.csv",
+        "value_col": "HICP Inflation rate - Food including alcohol and tobacco - Annual rate of change (HICP.M.U2.N.FOOD00.4D0.ANR)",
+        "label": "HICP Food Rate",
     },
 }
 
@@ -42,15 +52,15 @@ PREDICTION_UPPER_BOUND = None
 
 
 def calculate_bounds(df: pd.DataFrame) -> tuple:
-    """Calculate realistic prediction bounds from actual data using percentiles.
+    """Calculate realistic prediction bounds for monthly inflation-rate changes.
     
     Instead of fixed bounds that may be too tight or too loose, we use the 5th 
-    and 95th percentile of the actual inflation rates. This lets ~90% of real 
+    and 95th percentile of the actual monthly changes. This lets ~90% of real
     data pass through naturally while still catching extreme outliers.
     """
-    inf_rates = df["Inflation_Rate"].dropna()
-    lower = np.percentile(inf_rates, 5)
-    upper = np.percentile(inf_rates, 95)
+    changes = df["Inflation_Change"].dropna()
+    lower = np.percentile(changes, 5)
+    upper = np.percentile(changes, 95)
     return float(lower), float(upper)
 
 # Feature engineering - creates lagged and rolling features for the model
@@ -58,7 +68,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     """Create lagged inflation changes and seasonal features."""
     d = df.copy()
     
-    # Lagged changes from the previous month-over-month inflation change
+    # Lagged changes from the previous monthly movement in the annual inflation rate
     # These help the model learn short and long-term patterns
     d["lag_1"]  = d["Inflation_Change"].shift(1)
     d["lag_2"]  = d["Inflation_Change"].shift(2)
@@ -89,8 +99,8 @@ def load_dataset(csv_path: str, value_col: str) -> pd.DataFrame:
     
     Process:
     1. Read the CSV and parse dates
-    2. Calculate month-over-month percentage changes
-    3. Calculate first-order differences (change from previous change)
+    2. Treat the ECB ANR column as an annual inflation rate in percent
+    3. Calculate the month-to-month difference in that annual rate
     """
     df = pd.read_csv(csv_path)
     
@@ -102,14 +112,14 @@ def load_dataset(csv_path: str, value_col: str) -> pd.DataFrame:
     df = df.set_index("DATE").sort_index()
     df = df.rename(columns={value_col: "Index_Value"})
     
-    # Month-over-month percentage change of the index
-    df["Inflation_Rate"] = df["Index_Value"].pct_change() * 100
+    # ECB ANR series or annual inflation rates in percent
+    df["Inflation_Rate"] = pd.to_numeric(df["Index_Value"], errors="coerce")
     
-    # Remove any problematic values (infinities from zero index values)
+    # Remove any problematic values
     df = df[~np.isinf(df["Inflation_Rate"])]
     df = df.dropna(subset=["Inflation_Rate"])
     
-    # Calculate the change in inflation from one month to the next
+    # Calculate the month-to-month difference in the annual inflation rate
     # This is what we actually predict - it's more stable than predicting absolute rates
     df["Inflation_Change"] = df["Inflation_Rate"].diff()
     
@@ -124,10 +134,15 @@ def mape(actual: np.ndarray, predicted: np.ndarray) -> float:
     return float(np.mean(np.abs((actual[mask] - predicted[mask]) / actual[mask])) * 100)
 
 
+def persistence_baseline(y: pd.Series, test_months: int) -> pd.Series:
+    """Use the previous observed monthly change as a simple forecast baseline."""
+    return y.shift(1).iloc[-test_months:]
+
+
 def validate_features(df: pd.DataFrame, stage: str, lower: float, upper: float) -> None:
-    """Log a warning if we find extreme inflation values outside the bounds."""
-    inf_rates = df["Inflation_Rate"].dropna()
-    extreme_values = np.sum((inf_rates < lower) | (inf_rates > upper))
+    """Log a warning if we find inflation changes outside the prediction bounds."""
+    changes = df["Inflation_Change"].dropna()
+    extreme_values = np.sum((changes < lower) | (changes > upper))
     if extreme_values > 0:
         print(f"  [INFO] {stage}: Found {extreme_values} extreme values outside [{lower:.2f}%, {upper:.2f}%]")
 
@@ -173,25 +188,41 @@ def train_and_save(key: str, config: dict, out_dir: str):
     predictions = model.predict(X_test)
     mae_val  = mean_absolute_error(y_test, predictions)
     mape_val = mape(y_test.values, predictions)
+
+    # Baseline: predict each test month using the previous observed monthly change
+    baseline_predictions = persistence_baseline(y, TEST_MONTHS)
+    baseline_mae_val = mean_absolute_error(y_test, baseline_predictions)
+    baseline_mape_val = mape(y_test.values, baseline_predictions.values)
+    baseline_improvement = (
+        (baseline_mae_val - mae_val) / baseline_mae_val * 100
+        if baseline_mae_val != 0 else float("nan")
+    )
     
     print(f"  MAE  = {mae_val:.4f}")
     print(f"  MAPE = {mape_val:.2f}%")
+    print(f"  Baseline MAE  = {baseline_mae_val:.4f}")
+    print(f"  Baseline MAPE = {baseline_mape_val:.2f}%")
+    print(f"  Improvement vs baseline = {baseline_improvement:.1f}%")
     
     # Check if any predictions went out of bounds (would have been clipped)
     oob_count = np.sum((predictions < PREDICTION_LOWER_BOUND) | (predictions > PREDICTION_UPPER_BOUND))
     if oob_count > 0:
-        print(f"  ⚠️  {oob_count} predictions exceed bounds [{PREDICTION_LOWER_BOUND:.2f}%, {PREDICTION_UPPER_BOUND:.2f}%]")
+        print(f"  WARNING: {oob_count} predictions exceed bounds [{PREDICTION_LOWER_BOUND:.2f}%, {PREDICTION_UPPER_BOUND:.2f}%]")
     
     # Create backtest dataframe for later visualization
     backtest_df = pd.DataFrame({
         "Actual":     y_test.values,
         "Predicted":  predictions,
+        "Baseline":   baseline_predictions.values,
     }, index=y_test.index)
     
     # Prepare all stats to save
     stats = {
         "mae":       mae_val,
         "mape":      mape_val,
+        "baseline_mae": baseline_mae_val,
+        "baseline_mape": baseline_mape_val,
+        "baseline_improvement": baseline_improvement,
         "backtest":  backtest_df,
         "label":     config["label"],
         "lower_bound": PREDICTION_LOWER_BOUND,
@@ -213,7 +244,7 @@ def train_and_save(key: str, config: dict, out_dir: str):
 # MAIN
 # ------------------------------------------------------------------
 if __name__ == "__main__":
-    OUT_DIR = "models"
+    OUT_DIR = MODELS_DIR
     summary = {}
     
     # Train all datasets

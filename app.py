@@ -1,5 +1,7 @@
 import os
 import subprocess
+import sys
+from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
@@ -13,13 +15,16 @@ st.set_page_config(
     layout="wide",
 )
 
-MODELS_DIR = "models"
+BASE_DIR = Path(__file__).resolve().parent
+MODELS_DIR = BASE_DIR / "models"
+TRAINING_SCRIPT = BASE_DIR / "train_models.py"
 
 # Available datasets for selection
 DATASETS = {
-    "overall_hicp": "Overall HICP (Euro Area)",
-    "alcohol":      "Alcoholic Beverages & Tobacco (Euro Area)",
-    "coal":         "Coal (Euro Area)",
+    "overall_hicp": "HICP Inflation Overall Rate",
+    "energy":       "HICP Energy Rate",
+    "housing":      "HICP Housing Rate",
+    "food":         "HICP Food Rate",
 }
 
 # Features used during training
@@ -47,32 +52,32 @@ def load_all_assets() -> dict:
     
     # Train missing models if any
     if missing_models:
-        st.info(f"🔄 Training missing models for: {', '.join(missing_models)}...")
+        st.info(f"Training missing models for: {', '.join(missing_models)}...")
         try:
             # Run the training script
             result = subprocess.run(
-                ["python3", "train_models.py"],
+                [sys.executable, str(TRAINING_SCRIPT)],
                 capture_output=True,
                 text=True,
-                timeout=300  # 5 minute timeout
+                cwd=BASE_DIR,
             )
             if result.returncode == 0:
-                st.success("✅ Models trained successfully!")
+                st.success("Models trained successfully.")
             else:
-                st.error(f"❌ Training failed: {result.stderr}")
+                st.error(f"Training failed: {result.stderr}")
                 return {}
         except subprocess.TimeoutExpired:
-            st.error("❌ Training timed out after 5 minutes")
+            st.error("Training timed out after 5 minutes")
             return {}
         except Exception as e:
-            st.error(f"❌ Training error: {str(e)}")
+            st.error(f"Training error: {str(e)}")
             return {}
     
     # Load all models
     for key in DATASETS:
         model_path = os.path.join(MODELS_DIR, f"{key}_model.pkl")
         if not os.path.exists(model_path):
-            st.error(f"❌ Model for {key} still missing after training")
+            st.error(f"Model for {key} still missing after training")
             assets[key] = None
             continue
         
@@ -172,18 +177,31 @@ all_assets = load_all_assets()
 missing = [k for k, v in all_assets.items() if v is None]
 if missing:
     st.error(
-        f"⚠️ Model files not found for: {', '.join(missing)}.\n\n"
+        f"Model files not found for: {', '.join(missing)}.\n\n"
         "Please run `python3 train_models.py` first to generate the model files."
     )
     st.stop()
 
 
+# Initialize session state for page navigation
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "Home"
+
 # ==============================================================================
-# SIDEBAR - User Controls
+# NAVIGATION AND SIDEBAR
 # ==============================================================================
 with st.sidebar:
     st.title("Forecasting Dashboard")
-    st.markdown("Inflation forecasting with XGBoost and recursive predictions")
+    st.divider()
+    
+    # Navigation buttons
+    if st.button("Home", key="btn_home", width="stretch"):
+        st.session_state.current_page = "Home"
+    if st.button("Model Performance", key="btn_perf", width="stretch"):
+        st.session_state.current_page = "Model Performance"
+    if st.button("Future Forecast", key="btn_forecast", width="stretch"):
+        st.session_state.current_page = "Future Forecast"
+    
     st.divider()
     
     # Dataset selector
@@ -193,34 +211,194 @@ with st.sidebar:
     )
     selected_key = [k for k, v in DATASETS.items() if v == selected_label][0]
     
-    st.divider()
-    
-    # View selector
-    page = st.radio("View", ["Model Performance", "Future Forecast"])
-    
     # Forecast horizon (only shown on forecast page)
-    if page == "Future Forecast":
+    if st.session_state.current_page == "Future Forecast":
         st.divider()
         horizon = st.slider("Months to forecast", min_value=1, max_value=12, value=6)
+    else:
+        horizon = 6  # Default value
     
     st.divider()
     st.caption("Data source: ECB Official Website")
 
 
-# Load selected model and data
-assets  = all_assets[selected_key]
-if assets is None:
-    st.error(f"❌ Model for {selected_label} is not available. Please check the training process.")
+# Load all models at startup
+all_assets = load_all_assets()
+
+missing = [k for k, v in all_assets.items() if v is None]
+if missing:
+    st.error(
+        f"Model files not found for: {', '.join(missing)}.\n\n"
+        "Please run `python3 train_models.py` first to generate the model files."
+    )
     st.stop()
 
-model   = assets["model"]
-stats   = assets["stats"]
-df_raw  = assets["data"]
 
 # ==============================================================================
-# PAGE 1: MODEL PERFORMANCE
+# PAGE CONTENT
 # ==============================================================================
-if page == "Model Performance":
+
+# HOME PAGE
+if st.session_state.current_page == "Home":
+    st.markdown("""
+    <style>
+        .home-title {
+            font-size: 3.5em;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .home-subtitle {
+            font-size: 1.3em;
+            text-align: center;
+            color: #666;
+            margin-bottom: 40px;
+            line-height: 1.6;
+        }
+        .button-container {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-top: 50px;
+            flex-wrap: wrap;
+        }
+        .feature-box {
+            background: #243447;
+            color: #ffffff;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            margin: 10px;
+            flex: 1;
+            min-width: 250px;
+            border: 1px solid #3d526b;
+        }
+        .feature-box strong {
+            color: #ffffff;
+        }
+        .feature-icon {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        .home-description {
+            max-width: 900px;
+            margin: 0 auto;
+            text-align: center;
+            line-height: 1.7;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('<div class="home-title">Forecasting Dashboard</div>', unsafe_allow_html=True)
+    
+    st.markdown("""
+    <div class="home-subtitle">
+    Inflation forecasting powered by<br>
+    <strong>Machine Learning</strong> & <strong>XGBoost</strong>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("""
+    <div class="home-description">
+    This dashboard provides data-driven inflation forecasts for the Euro Area across
+    multiple categories. Built with machine learning algorithms, it combines
+    historical inflation patterns with advanced feature engineering to predict future trends.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.divider()
+    
+    # Feature boxes
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown("""
+        <div class="feature-box">
+            <strong>4 Categories</strong><br>
+            Overall, Energy, Housing, Food
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="feature-box">
+            <strong>XGBoost Model</strong><br>
+            Advanced ML predictions
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div class="feature-box">
+            <strong>Recursive Forecast</strong><br>
+            Up to 12 months ahead
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown("""
+        <div class="feature-box">
+            <strong>Real Data</strong><br>
+            ECB Official Statistics
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.divider()
+    
+    # Big action buttons
+    st.subheader("Get Started", divider=True)
+    
+    col_left, col_mid, col_right = st.columns([1, 0.2, 1])
+    
+    with col_left:
+        st.markdown("""
+        ### Model Performance
+        Review how our models perform on real data. See prediction accuracy metrics (MAE, MAPE) 
+        and compare actual vs. predicted inflation rates over the last 12 months.
+        """)
+        if st.button("View Model Performance", key="home_perf", width="stretch",
+                    help="See backtesting results and model accuracy metrics"):
+            st.session_state.current_page = "Model Performance"
+            st.rerun()
+    
+    with col_right:
+        st.markdown("""
+        ### Future Forecast
+        Generate predictions for upcoming months. Use our recursive forecasting algorithm 
+        to see inflation trends for the next 1-12 months with realistic prediction bounds.
+        """)
+        if st.button("Generate Forecast", key="home_forecast", width="stretch",
+                    help="Forecast future inflation rates"):
+            st.session_state.current_page = "Future Forecast"
+            st.rerun()
+    
+    st.divider()
+    
+    st.markdown("""
+    ### How It Works
+    
+    1. **Data Collection**: Historical inflation data from ECB (Euro Central Bank)
+    2. **Feature Engineering**: Lagged changes, rolling averages, seasonal patterns
+    3. **Model Training**: XGBoost trained on inflation changes with backtesting
+    4. **Recursive Forecasting**: Step-by-step predictions with realistic bounds
+    5. **Performance Monitoring**: Continuous evaluation using MAE and MAPE metrics
+    """)
+
+# MODEL PERFORMANCE PAGE
+elif st.session_state.current_page == "Model Performance":
+    # Load selected model and data
+    assets  = all_assets[selected_key]
+    if assets is None:
+        st.error(f"Model for {selected_label} is not available. Please check the training process.")
+        st.stop()
+
+    model   = assets["model"]
+    stats   = assets["stats"]
+    df_raw  = assets["data"]
+    
     st.title("Model Performance — Last 12 Months")
     st.markdown(
         f"Comparing the model's predictions against actual Eurostat data "
@@ -270,7 +448,7 @@ if page == "Model Performance":
         display.index = display.index.strftime("%b %Y")
         display["Error"] = display["Predicted"] - display["Actual"]
         display = display.round(4)
-        st.dataframe(display, use_container_width=True)
+        st.dataframe(display, width="stretch")
     
     st.info(
         "The model was trained on all data except these 12 months. "
@@ -279,6 +457,17 @@ if page == "Model Performance":
 
 
 else:
+    # FUTURE FORECAST PAGE
+    # Load selected model and data
+    assets  = all_assets[selected_key]
+    if assets is None:
+        st.error(f"Model for {selected_label} is not available. Please check the training process.")
+        st.stop()
+
+    model   = assets["model"]
+    stats   = assets["stats"]
+    df_raw  = assets["data"]
+    
     st.title("Future Forecast")
     st.markdown(
         f"Recursively forecasting **{horizon} month{'s' if horizon > 1 else ''}** ahead "
@@ -356,7 +545,7 @@ else:
         fc_display = df_forecast.copy()
         fc_display.index = fc_display.index.strftime("%b %Y")
         fc_display["Forecast"] = fc_display["Forecast"].round(4)
-        st.dataframe(fc_display, use_container_width=True)
+        st.dataframe(fc_display, width="stretch")
     
     st.divider()
     
@@ -364,7 +553,7 @@ else:
     validation = validate_forecast(df_forecast, lower_bound, upper_bound)
     if validation["has_clipped"]:
         st.warning(
-            f"⚠️ **Bounds Applied**: {validation['clipped_count']} out of "
+            f"Bounds Applied: {validation['clipped_count']} out of "
             f"{validation['total_count']} forecasts were clipped to "
             f"[{validation['lower']:.2f}%, {validation['upper']:.2f}%] "
             f"to keep predictions realistic. This often means the model is uncertain beyond this horizon."
@@ -379,6 +568,14 @@ else:
                  help="Mean Absolute Percentage Error on test data.")
     
     st.caption(
-        "⚠️ Recursive forecasts compound errors over time — the further ahead, "
+        "Recursive forecasts compound errors over time — the further ahead, "
         "the less reliable. Treat long-term forecasts as directional trends, not precise predictions."
     )
+    
+    
+    
+    
+    
+    
+    
+    
