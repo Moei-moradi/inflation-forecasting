@@ -60,6 +60,7 @@ def load_all_assets() -> dict:
                 capture_output=True,
                 text=True,
                 cwd=BASE_DIR,
+                timeout=300,
             )
             if result.returncode == 0:
                 st.success("Models trained successfully.")
